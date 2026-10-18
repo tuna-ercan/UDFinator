@@ -6,12 +6,16 @@ __pycache__/
 venv/
 env/
 
-# PyInstaller
+# PyInstaller (exe, aile fotografini icerdigi icin ASLA depoya girmemeli)
 build/
 dist/
 *.spec
+*.exe
 
 # Arka plan resmi (kisisel aile fotografi depoya girmesin)
+image.jpg
+image.jpeg
+image.png
 arkaplan.png
 arkaplan.jpg
 arkaplan.jpeg

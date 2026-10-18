@@ -6,6 +6,7 @@ Desteklenen donusumler:
   * UDF  -> DOCX   (udf_to_docx)
   * UDF  -> PDF    (udf_to_pdf)
   * PDF  -> UDF    (pdf_to_udf)
+  * DOCX -> UDF    (docx_to_udf)
 
 Yaklasim:
   - Bir UDF (UYAP Dokuman Formati) dosyasi, icinde content.xml bulunan bir ZIP
@@ -131,13 +132,13 @@ def _read_content_xml(udf_path):
             name = next((n for n in zf.namelist()
                          if n.lower().endswith("content.xml")), None)
             if name is None:
-                raise UdfError("UDF icinde content.xml bulunamadi.")
+                raise UdfError("UDF içinde content.xml bulunamadı.")
             return zf.read(name).decode("utf-8", errors="replace")
     with open(udf_path, "rb") as fh:
         raw = fh.read()
     if b"<template" in raw:
         return raw.decode("utf-8", errors="replace")
-    raise UdfError("Dosya gecerli bir UDF arsivi degil.")
+    raise UdfError("Dosya geçerli bir UDF arşivi değil.")
 
 
 def _run_text(el, pool):
@@ -189,6 +190,16 @@ def _paragraph_props(para, el):
     para.first_line_indent = _as_float(_attr(el, "FirstLineIndent"))
 
 
+def _strip_paragraph_break(para):
+    """Paragraf sonundaki ayirici \\n'i (havuzdaki paragraf siniri) metinden atar."""
+    while para.runs and para.runs[-1].text.endswith(("\n", "\r")):
+        last = para.runs[-1]
+        last.text = last.text.rstrip("\r\n")
+        if last.text:
+            break
+        para.runs.pop()
+
+
 def _collect_paragraph(el, pool):
     """Bir <paragraph> elemanini blok listesine cevirir (Para ve Img karisik)."""
     blocks = []
@@ -201,6 +212,7 @@ def _collect_paragraph(el, pool):
         run = _make_run(el, pool)
         if run.text:
             current.runs.append(run)
+        _strip_paragraph_break(current)
         blocks.append(current)
         return blocks
 
@@ -222,8 +234,15 @@ def _collect_paragraph(el, pool):
                     current = Para()
                     _paragraph_props(current, el)
                 blocks.append(img)
-    blocks.append(current)
+    _strip_paragraph_break(current)
+    # Resimden sonra bos kalan artigi ekleme; gercekten bos paragraflari koru
+    if current.runs or not blocks:
+        blocks.append(current)
     return blocks
+
+
+def _cell_span(cell_el):
+    return max(_as_int(_attr(cell_el, "colspan"), 1) or 1, 1)
 
 
 def _collect_table(el, pool):
@@ -232,7 +251,7 @@ def _collect_table(el, pool):
         return None
     col_count = _as_int(_attr(el, "columnCount"))
     if not col_count:
-        col_count = max((len([c for c in r if _local(c.tag) == "cell"])
+        col_count = max((sum(_cell_span(c) for c in r if _local(c.tag) == "cell")
                          for r in rows_el), default=1)
     col_count = max(col_count, 1)
     table = Tbl(col_count)
@@ -247,7 +266,7 @@ def _collect_table(el, pool):
                             cell_paras.append(blk)
             if not cell_paras:
                 cell_paras.append(Para())
-            cells.append(cell_paras)
+            cells.append((cell_paras, _cell_span(cell_el)))
         table.rows.append(cells)
     return table
 
@@ -258,7 +277,7 @@ def _parse_udf(udf_path):
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError as exc:
-        raise UdfError("content.xml cozumlenemedi: %s" % exc)
+        raise UdfError("content.xml çözümlenemedi: %s" % exc)
 
     pool = ""
     elements_el = None
@@ -374,14 +393,20 @@ def udf_to_docx(udf_path, docx_path):
                     pass
                 for row in blk.rows:
                     cells = table.add_row().cells
-                    for i, cell_paras in enumerate(row):
-                        if i >= blk.col_count:
+                    col = 0
+                    for cell_paras, span in row:
+                        if col >= blk.col_count:
                             break
+                        target = cells[col]
+                        end = min(col + span, blk.col_count) - 1
+                        if end > col:
+                            target = target.merge(cells[end])
                         first = True
                         for cp in cell_paras:
-                            para = cells[i].paragraphs[0] if first else cells[i].add_paragraph()
+                            para = target.paragraphs[0] if first else target.add_paragraph()
                             first = False
                             _docx_fill_para(para, cp)
+                        col += span
             except Exception:
                 pass
 
@@ -540,14 +565,20 @@ def udf_to_pdf(udf_path, pdf_path):
                 story.append(Spacer(1, 6))
             elif isinstance(blk, Tbl):
                 data = []
-                for row in blk.rows:
-                    cells = []
-                    for cell_paras in row:
+                spans = []
+                for r_i, row in enumerate(blk.rows):
+                    cells = [""] * blk.col_count
+                    col = 0
+                    for cell_paras, span in row:
+                        if col >= blk.col_count:
+                            break
                         flow = [_pdf_paragraph(cp, default_size=10) for cp in cell_paras]
-                        cells.append(flow if flow else "")
-                    while len(cells) < blk.col_count:
-                        cells.append("")
-                    data.append(cells[:blk.col_count])
+                        cells[col] = flow if flow else ""
+                        end = min(col + span, blk.col_count) - 1
+                        if end > col:
+                            spans.append(("SPAN", (col, r_i), (end, r_i)))
+                        col += span
+                    data.append(cells)
                 if data:
                     table = RLTable(data, colWidths=usable_w / float(blk.col_count))
                     table.setStyle(TableStyle([
@@ -555,7 +586,7 @@ def udf_to_pdf(udf_path, pdf_path):
                         ("VALIGN", (0, 0), (-1, -1), "TOP"),
                         ("LEFTPADDING", (0, 0), (-1, -1), 4),
                         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                    ]))
+                    ] + spans))
                     story.append(table)
                     story.append(Spacer(1, 6))
         except Exception:
@@ -580,7 +611,7 @@ _UDF_TEMPLATE = (
     'headerFOffset="20.0" footerFOffset="20.0"/></properties>\n'
     '<elements resolver="hvl-default">\n{elements}\n</elements>\n'
     '<styles>\n'
-    '<style name="default" description="Geis Stded Stil" family="Times New Roman" '
+    '<style name="default" description="Varsayılan" family="Times New Roman" '
     'size="12" bold="false" italic="false" foreground="-13421773" '
     'FONT_ATTRIBUTE_KEY="Dialog" />\n'
     '<style name="hvl-default" family="Times New Roman" size="12" '
@@ -613,7 +644,7 @@ def pdf_to_udf(pdf_path, udf_path):
         try:
             import fitz as pymupdf  # eski surum adi
         except Exception:
-            raise UdfError("PDF okuma kutuphanesi (PyMuPDF) yuklenemedi.")
+            raise UdfError("PDF okuma kütüphanesi (PyMuPDF) yüklenemedi.")
     try:
         from PIL import Image as PILImage
         _has_pil = True
@@ -623,7 +654,7 @@ def pdf_to_udf(pdf_path, udf_path):
     try:
         pdf = pymupdf.open(pdf_path)
     except Exception as exc:
-        raise UdfError("PDF acilamadi: %s" % exc)
+        raise UdfError("PDF açılamadı: %s" % exc)
 
     content_parts = []
     elements = []
@@ -711,7 +742,336 @@ def pdf_to_udf(pdf_path, udf_path):
         with zipfile.ZipFile(udf_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("content.xml", xml.encode("utf-8"))
     except Exception as exc:
-        raise UdfError("UDF yazilamadi: %s" % exc)
+        raise UdfError("UDF yazılamadı: %s" % exc)
+
+
+# ---------------------------------------------------------------------------
+# DOCX -> UDF
+# ---------------------------------------------------------------------------
+
+# A4 (595 pt) - 2 x 42.5 pt kenar boslugu; tablo sutun genislikleri icin
+_UDF_TEXT_WIDTH_PT = 510.0
+_BLACK = -16777216
+_DEFAULT_STYLE = ('family="Times New Roman" size="12" bold="false" '
+                  'italic="false" underline="false" foreground="%d"' % _BLACK)
+_PLAIN_PARA_ATTRS = 'Alignment="0" LeftIndent="0.0" RightIndent="0.0"'
+
+
+def _qattr(value):
+    """XML oznitelik degeri icin kacis."""
+    return _xml_escape(str(value), {'"': "&quot;"})
+
+
+def _signed_argb(rgb_hex):
+    """'RRGGBB' -> UDF'nin kullandigi isaretli ARGB tam sayi."""
+    v = 0xFF000000 | int(rgb_hex, 16)
+    return v - (1 << 32) if v >= (1 << 31) else v
+
+
+def _image_to_b64(blob):
+    """Resmi base64'e cevirir; PNG/JPEG disindaki bicimleri PNG yapar."""
+    try:
+        from PIL import Image as PILImage
+        im = PILImage.open(io.BytesIO(blob))
+        if im.format in ("PNG", "JPEG"):
+            return base64.b64encode(blob).decode("ascii")
+        im = im.convert("RGBA" if im.mode in ("P", "RGBA", "LA") else "RGB")
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return base64.b64encode(blob).decode("ascii") if blob else None
+
+
+class _UdfWriter:
+    """CDATA havuzunu ve elementleri birlikte kurar; offsetler hep tutarli kalir.
+
+    Elementler belge sirasiyla uretildigi icin havuz sirasi da ayni olur.
+    """
+
+    def __init__(self):
+        self.pool = []
+        self.offset = 0
+
+    def take(self, text):
+        start = self.offset
+        self.pool.append(text)
+        self.offset += len(text)
+        return start
+
+    def paragraph(self, attrs, items):
+        """items: ('text', metin, stil) | ('tab', stil) | ('image', b64, w, h)"""
+        parts = []
+        last_style = _DEFAULT_STYLE
+        has_any = False
+        for item in items:
+            kind = item[0]
+            if kind == "text":
+                text, style = item[1], item[2]
+                if not text:
+                    continue
+                s = self.take(text)
+                parts.append('<content startOffset="%d" length="%d" %s/>'
+                             % (s, len(text), style))
+                last_style = style
+                has_any = True
+            elif kind == "tab":
+                s = self.take("\t")
+                parts.append('<tab startOffset="%d" length="1" %s/>' % (s, item[1]))
+                has_any = True
+            elif kind == "image":
+                s = self.take(_IMAGE_PLACEHOLDER)
+                size = ""
+                if item[2] and item[3]:
+                    size = ' width="%.2f" height="%.2f"' % (item[2], item[3])
+                parts.append('<image imageData="%s" startOffset="%d" length="1"%s/>'
+                             % (item[1], s, size))
+                has_any = True
+        if not has_any:
+            # Bos paragraf isaretcisi (U+200B)
+            s = self.take(_ZERO_WIDTH)
+            parts.append('<content startOffset="%d" length="1" %s/>' % (s, last_style))
+        # Paragraf siniri
+        s = self.take("\n")
+        parts.append('<content startOffset="%d" length="1" %s/>' % (s, last_style))
+        return "<paragraph %s>%s</paragraph>" % (attrs, "".join(parts))
+
+    def content(self):
+        return _cdata_safe("".join(self.pool))
+
+
+def _pt(length):
+    try:
+        return float(length.pt) if length is not None else 0.0
+    except Exception:
+        return 0.0
+
+
+def _docx_alignment(paragraph):
+    align = paragraph.alignment
+    if align is None:
+        try:
+            align = paragraph.style.paragraph_format.alignment
+        except Exception:
+            align = None
+    if align is None:
+        return 0
+    v = int(align)
+    # python-docx: 0 sol, 1 orta, 2 sag, 3 iki yana; diger yaslama turleri -> 3
+    if v in (0, 1, 2, 3):
+        return v
+    return 3 if v in (4, 5, 7, 8, 9) else 0
+
+
+def _docx_para_attrs(paragraph):
+    pf = paragraph.paragraph_format
+    attrs = 'Alignment="%d" LeftIndent="%.1f" RightIndent="%.1f"' % (
+        _docx_alignment(paragraph), _pt(pf.left_indent), _pt(pf.right_indent))
+    first = _pt(pf.first_line_indent)
+    if first:
+        attrs += ' FirstLineIndent="%.1f"' % first
+    return attrs
+
+
+def _docx_defaults(document):
+    family, size = "Times New Roman", 12.0
+    try:
+        font = document.styles["Normal"].font
+        if font.name:
+            family = font.name
+        if font.size:
+            size = font.size.pt
+    except Exception:
+        pass
+    return family, size
+
+
+def _style_font(paragraph, attr):
+    """Paragraf stili zincirinde (base_style) ilk tanimli font degerini bulur."""
+    try:
+        style = paragraph.style
+    except Exception:
+        return None
+    while style is not None:
+        try:
+            value = getattr(style.font, attr)
+        except Exception:
+            value = None
+        if value is not None:
+            return value
+        style = getattr(style, "base_style", None)
+    return None
+
+
+def _docx_run_style(run, paragraph, defaults):
+    font = run.font
+    family = font.name or _style_font(paragraph, "name") or defaults[0]
+    if font.size is not None:
+        size = font.size.pt
+    else:
+        inherited = _style_font(paragraph, "size")
+        size = inherited.pt if inherited is not None else defaults[1]
+
+    def flag(value, attr):
+        if value is not None:
+            return bool(value)
+        return bool(_style_font(paragraph, attr))
+
+    bold = flag(run.bold, "bold")
+    italic = flag(run.italic, "italic")
+    underline = flag(run.underline, "underline")
+    color = _BLACK
+    try:
+        if font.color is not None and font.color.rgb is not None:
+            color = _signed_argb(str(font.color.rgb))
+    except Exception:
+        pass
+    # UYAP (Java Swing) tam sayi punto bekler
+    return ('family="%s" size="%d" bold="%s" italic="%s" underline="%s" foreground="%d"'
+            % (_qattr(family), int(round(size)), str(bold).lower(),
+               str(italic).lower(), str(underline).lower(), color))
+
+
+def _docx_inner_runs(paragraph):
+    """Paragraftaki run'lar (kopru/hyperlink icindekiler dahil), sirayla."""
+    from docx.text.run import Run as DocxRun
+    try:
+        items = list(paragraph.iter_inner_content())
+    except AttributeError:
+        return list(paragraph.runs)
+    runs = []
+    for item in items:
+        if isinstance(item, DocxRun):
+            runs.append(item)
+        else:
+            runs.extend(getattr(item, "runs", []))
+    return runs
+
+
+def _docx_run_images(run, document):
+    from docx.oxml.ns import qn
+    out = []
+    el = run._element
+    blips = list(el.iter(qn("a:blip")))
+    if not blips:
+        return out
+    extents = list(el.iter(qn("wp:extent")))
+    for i, blip in enumerate(blips):
+        rid = blip.get(qn("r:embed"))
+        if not rid:
+            continue
+        try:
+            blob = document.part.related_parts[rid].blob
+        except Exception:
+            continue
+        b64 = _image_to_b64(blob)
+        if not b64:
+            continue
+        w = h = None
+        if i < len(extents):
+            try:
+                # EMU -> pt (1 pt = 12700 EMU)
+                w = int(extents[i].get("cx")) / 12700.0
+                h = int(extents[i].get("cy")) / 12700.0
+            except Exception:
+                pass
+        out.append(("image", b64, w, h))
+    return out
+
+
+def _docx_paragraph_xml(writer, paragraph, document, defaults):
+    """Bir Word paragrafini bir ya da daha fazla UDF <paragraph>'ina cevirir.
+
+    Satir sonlari (Shift+Enter) UDF'de paragraf siniri oldugu icin, paragraf
+    o noktalardan bolunur.
+    """
+    attrs = _docx_para_attrs(paragraph)
+    out = []
+    items = []
+    for run in _docx_inner_runs(paragraph):
+        style = _docx_run_style(run, paragraph, defaults)
+        text = _xml_valid(run.text or "").replace("\r\n", "\n").replace("\r", "\n")
+        for li, line in enumerate(text.split("\n")):
+            if li > 0:
+                out.append(writer.paragraph(attrs, items))
+                items = []
+            for ti, piece in enumerate(line.split("\t")):
+                if ti > 0:
+                    items.append(("tab", style))
+                if piece:
+                    items.append(("text", piece, style))
+        items.extend(_docx_run_images(run, document))
+    out.append(writer.paragraph(attrs, items))
+    return out
+
+
+def _docx_table_xml(writer, table, document, defaults):
+    try:
+        col_count = len(table.columns)
+    except Exception:
+        col_count = 1
+    col_count = max(col_count, 1)
+    width = _UDF_TEXT_WIDTH_PT / col_count
+    spans = ",".join("%.1f" % width for _ in range(col_count))
+
+    rows_xml = []
+    for row in table.rows:
+        # Birlesik (yatay) hucreler python-docx'te tekrar eder; tek hucre + colspan yap
+        groups = []
+        for cell in row.cells:
+            if groups and groups[-1][0]._tc is cell._tc:
+                groups[-1][1] += 1
+            else:
+                groups.append([cell, 1])
+        cells_xml = []
+        for cell, span in groups:
+            paras = []
+            for p in cell.paragraphs:
+                paras.extend(_docx_paragraph_xml(writer, p, document, defaults))
+            if not paras:
+                paras.append(writer.paragraph(_PLAIN_PARA_ATTRS, []))
+            colspan = ' colspan="%d"' % span if span > 1 else ""
+            cells_xml.append("<cell%s>%s</cell>" % (colspan, "".join(paras)))
+        rows_xml.append('<row rowType="dataRow">%s</row>' % "".join(cells_xml))
+    return ('<table columnCount="%d" columnSpans="%s" border="borderCell">%s</table>'
+            % (col_count, spans, "".join(rows_xml)))
+
+
+def docx_to_udf(docx_path, udf_path):
+    try:
+        from docx import Document
+        from docx.table import Table as DocxTable
+    except Exception:
+        raise UdfError("Word okuma kütüphanesi yüklenemedi.")
+    try:
+        document = Document(docx_path)
+    except Exception:
+        raise UdfError(
+            "Word dosyası açılamadı. Dosyanın .docx biçiminde olduğundan emin "
+            "olun (eski .doc dosyalarını Word'de .docx olarak kaydedebilirsiniz)."
+        )
+
+    defaults = _docx_defaults(document)
+    writer = _UdfWriter()
+    elements = []
+    for block in document.iter_inner_content():
+        if isinstance(block, DocxTable):
+            try:
+                elements.append(_docx_table_xml(writer, block, document, defaults))
+            except Exception:
+                continue
+        else:
+            elements.extend(_docx_paragraph_xml(writer, block, document, defaults))
+
+    if not elements:
+        elements.append(writer.paragraph(_PLAIN_PARA_ATTRS, []))
+
+    xml = _UDF_TEMPLATE.format(content=writer.content(), elements="\n".join(elements))
+    try:
+        with zipfile.ZipFile(udf_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("content.xml", xml.encode("utf-8"))
+    except Exception as exc:
+        raise UdfError("UDF yazılamadı: %s" % exc)
 
 
 # ---------------------------------------------------------------------------
@@ -720,9 +1080,10 @@ def pdf_to_udf(pdf_path, udf_path):
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) != 4:
-        print("Kullanim: python converters.py [udf2docx|udf2pdf|pdf2udf] girdi cikti")
+    modes = {"udf2docx": udf_to_docx, "udf2pdf": udf_to_pdf,
+             "pdf2udf": pdf_to_udf, "docx2udf": docx_to_udf}
+    if len(sys.argv) != 4 or sys.argv[1] not in modes:
+        print("Kullanim: python converters.py [%s] girdi cikti" % "|".join(modes))
         sys.exit(1)
-    mode, src, dst = sys.argv[1], sys.argv[2], sys.argv[3]
-    {"udf2docx": udf_to_docx, "udf2pdf": udf_to_pdf, "pdf2udf": pdf_to_udf}[mode](src, dst)
-    print("Tamam:", dst)
+    modes[sys.argv[1]](sys.argv[2], sys.argv[3])
+    print("Tamam:", sys.argv[3])

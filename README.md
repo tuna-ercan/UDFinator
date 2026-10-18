@@ -1,21 +1,21 @@
 # UDFinator
 
-UYAP **.udf** dosyalarını kolayca Word ve PDF'e (ve geri) çeviren, olabildiğince
-sade bir Windows uygulaması. Tek bir pencere, üç büyük düğme — teknik bilgi
-gerektirmez.
+UYAP **.udf** dosyalarını Word ve PDF'e (ve geri) çeviren, olabildiğince sade bir
+Windows uygulaması. Tek pencere, dört büyük düğme — teknik bilgi gerektirmez.
 
-> *A simple Windows app to convert UYAP `.udf` files to Word / PDF and back.
+> *A simple Windows app to convert UYAP `.udf` files to and from Word / PDF.
 > Turkish-only interface, built to be usable by anyone.*
 
 ## Özellikler
 
 - 📄 **UDF → Word (.docx)**
 - 📕 **UDF → PDF**
+- 📝 **Word (.docx) → UDF**
 - 🔄 **PDF → UDF**
 
-Türkçe karakterler (ç, ğ, ı, İ, ş, ö, ü) hem Word hem de PDF çıktısında doğru
-görüntülenir. Paragraf hizalaması, kalın/italik/altı çizili, yazı tipi, renk ve
-tablolar korunur.
+Türkçe karakterler (ç, ğ, ı, İ, ş, ö, ü) her çıktıda doğru görüntülenir.
+Paragraf hizalaması, girintiler, kalın/italik/altı çizili, yazı tipi, boyut, renk,
+sekmeler, resimler ve tablolar (birleşik hücreler dahil) korunur.
 
 ## Nasıl Kullanılır
 
@@ -23,52 +23,72 @@ tablolar korunur.
 2. Yapmak istediğiniz dönüşümün düğmesine tıklayın.
 3. Dosyayı seçin. Yeni dosya, seçtiğiniz dosyanın **yanına** kaydedilir.
 
-İsterseniz programın (exe'nin) yanına `arkaplan.jpg` adında bir aile fotoğrafı
-koyabilirsiniz — otomatik olarak arka plan olur.
+### Arka plan fotoğrafı
+
+- Proje klasörüne `image.jpg` koyup `build.bat` çalıştırırsanız fotoğraf
+  **exe'nin içine gömülür**; tek dosya yeterli olur.
+- Ya da `UDFinator.exe`'nin yanına `image.jpg` koyun — yeniden derlemeden o
+  kullanılır.
+
+Fotoğraf varken metinlerin arkasına yarı saydam paneller eklenir; böylece yazı her
+fotoğrafta okunur, fotoğrafın geri kalanı görünür kalır.
+
+> ⚠️ Fotoğraf gömülü exe kişisel bir resim içerir. `image.jpg` ve `dist/`
+> klasörü `.gitignore` ile depodan hariç tutulur — exe'yi GitHub'a yüklemeyin.
 
 ## Çalışma Şekli (teknik)
 
 Bir `.udf` dosyası, içinde `content.xml` bulunan bir ZIP arşividir. Tüm metin tek
 bir CDATA havuzunda tutulur; biçim parçaları bu havuza karakter tabanlı, mutlak
-`startOffset`/`length` değerleriyle referans verir. UDFinator bu yapıyı okuyup
-ortak bir belge modeline çözümler, ardından Word (python-docx) veya PDF
-(reportlab) olarak işler.
+`startOffset`/`length` değerleriyle referans verir. Paragraflar havuzda `\n` ile
+ayrılır; resimler U+FFFC, boş paragraflar U+200B ile işaretlenir.
 
-PDF → UDF dönüşümü, her sayfanın metnini ve gömülü resimlerini çıkarıp
-`content.xml` olarak yeniden paketler.
+- **UDF → Word / PDF:** UDF ortak bir belge modeline çözümlenir, ardından Word
+  (python-docx) veya PDF (reportlab, Windows sistem yazı tipleri gömülü) olarak
+  işlenir.
+- **Word → UDF:** Her Word paragrafı ve parçası (run) biçimiyle birlikte havuza
+  eklenir; sekmeler `<tab>`, satır sonları (Shift+Enter) paragraf sınırı, resimler
+  boyutlarıyla `<image>`, tablolar `<table>/<row>/<cell>` olur.
+- **PDF → UDF:** Her sayfanın metni ve gömülü resimleri çıkarılıp `content.xml`
+  olarak yeniden paketlenir.
 
-> **Not:** PDF → UDF dönüşümü "en iyi çaba" ilkesiyle çalışır. Üretilen UDF,
-> metni ve resimleri içerir; ancak PDF'ler sayfa düzenini her zaman temiz bir
-> paragraf yapısı olarak taşımadığından, karmaşık düzenler yaklaşık olabilir.
-> Resmi UYAP işlemleri için sonucu kontrol edin.
+> **Not:** PDF → UDF "en iyi çaba" ilkesiyle çalışır. PDF'ler sayfa düzenini her
+> zaman temiz bir paragraf yapısı olarak taşımadığından karmaşık düzenler yaklaşık
+> olabilir. Resmi UYAP işlemlerinden önce sonucu kontrol edin.
 
-## Kaynaktan Çalıştırma / Derleme
+## Kaynaktan Derleme
+
+En kolayı: **`build.bat`** dosyasına çift tıklayın. Temiz bir sanal ortam
+(`.venv`) kurar, gerekli paketleri yükler ve `dist\UDFinator.exe` üretir.
+(Temiz ortam önemlidir: bilgisayardaki diğer Python paketleri exe'ye karışırsa
+dosya gigabaytlarca büyüyebilir.)
+
+Elle:
 
 ```bash
-pip install -r requirements.txt
-
-# Doğrudan çalıştır
-python app.py
-
-# Tek dosyalık exe üret
-pyinstaller --onefile --windowed --name "UDFinator" ^
-  --collect-data docx --collect-data reportlab app.py
+python -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python app.py
 ```
 
 Komut satırından dönüştürme:
 
 ```bash
-python converters.py udf2docx girdi.udf cikti.docx
-python converters.py udf2pdf  girdi.udf cikti.pdf
-python converters.py pdf2udf  girdi.pdf cikti.udf
+python converters.py udf2docx girdi.udf  cikti.docx
+python converters.py udf2pdf  girdi.udf  cikti.pdf
+python converters.py docx2udf girdi.docx cikti.udf
+python converters.py pdf2udf  girdi.pdf  cikti.udf
 ```
+
+Derlenmiş exe de aynı modları destekler (pencere açmaz, başarıda çıkış kodu 0):
+`UDFinator.exe --convert udf2pdf girdi.udf cikti.pdf`
 
 ## Teşekkür / Credits
 
-- UYAP UDF dosya biçiminin belgelenmesi ve PDF → UDF yöntemi için
-  [saidsurucu/UDF-Toolkit](https://github.com/saidsurucu/UDF-Toolkit) projesine
-  teşekkürler. UDFinator, bu projenin **kodunu içermez**; biçim belgelerine
-  dayanarak bağımsız olarak yazılmıştır.
+- UYAP UDF dosya biçiminin belgelenmesi ile Word → UDF ve PDF → UDF yöntemleri
+  için [saidsurucu/UDF-Toolkit](https://github.com/saidsurucu/UDF-Toolkit)
+  projesine teşekkürler. UDFinator bu projenin **kodunu içermez**; biçim
+  belgelerine dayanarak bağımsız olarak yazılmıştır.
 - Biçim üzerine ek inceleme:
   [UYAP .udf formatının tersine mühendisliği](https://dev.to/eimza/reverse-engineering-uyaps-udf-file-format-whats-inside-a-turkish-court-document-220m).
 
