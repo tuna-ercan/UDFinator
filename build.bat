@@ -23,8 +23,10 @@ if exist image.jpg (
     echo Arka plan resmi yok: duz renkli tasarim kullanilacak.
 )
 
+rem tkinterdnd2: surukle-birak icin yerel tkdnd kutuphanesi de paketlenmeli
 .venv\Scripts\python.exe -m PyInstaller --onefile --windowed --name UDFinator ^
-    --collect-data docx --collect-data reportlab %EXTRA% --noconfirm app.py || goto :hata
+    --collect-data docx --collect-data reportlab --collect-all tkinterdnd2 ^
+    %EXTRA% --noconfirm app.py || goto :hata
 
 echo.
 echo Bitti: dist\UDFinator.exe

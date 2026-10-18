@@ -1,7 +1,8 @@
 # UDFinator
 
 UYAP **.udf** dosyalarını Word ve PDF'e (ve geri) çeviren, olabildiğince sade bir
-Windows uygulaması. Tek pencere, dört büyük düğme — teknik bilgi gerektirmez.
+Windows uygulaması. Bir dönüşüm seçin, dosyayı pencereye sürükleyip bırakın,
+kaydedin — teknik bilgi gerektirmez.
 
 > *A simple Windows app to convert UYAP `.udf` files to and from Word / PDF.
 > Turkish-only interface, built to be usable by anyone.*
@@ -24,10 +25,18 @@ belgelerinde sayfa sonları birkaç satır kayabilir.)
 ## Nasıl Kullanılır
 
 1. `UDFinator.exe` dosyasını çalıştırın.
-2. Yapmak istediğiniz dönüşümün düğmesine tıklayın.
-3. Dosyayı seçin. Yeni dosya, seçtiğiniz dosyanın **yanına** kaydedilir.
-   Aynı adlı bir dosya zaten varsa üzerine yazılmaz; yeni dosya
-   `ad (1).docx` gibi ayrı bir adla kaydedilir.
+2. Ana menüden yapmak istediğiniz dönüşümü seçin.
+3. Dosyayı pencereye **sürükleyip bırakın** ya da **📂 Klasörden Seç** ile seçin.
+   Yanlış türde bir dosya verilirse program uyarır.
+4. Dönüştürme bitince nereye kaydedileceğini siz seçersiniz:
+   - **💾 Kaydet** — orijinal dosyanın yanına. Aynı adlı bir dosya zaten varsa
+     üzerine yazılmaz; `ad (1).docx` gibi ayrı bir adla kaydedilir.
+   - **📁 Farklı Kaydet…** — yeri ve adı siz seçersiniz.
+   - **📂 Klasörü Aç** kaydedilen dosyayı Gezgin'de gösterir.
+
+Dönüştürülen dosya kaydedilmeden program kapatılırsa uyarı verilir. Program
+yüksek çözünürlüklü / ölçekli (ör. %150) ekranlarda bulanıklaşmadan, keskin
+görünür.
 
 ### Arka plan fotoğrafı
 
@@ -141,6 +150,8 @@ Derlenmiş exe de aynı modları destekler (pencere açmaz, başarıda çıkış
   belgelerine dayanarak bağımsız olarak yazılmıştır.
 - Biçim üzerine ek inceleme:
   [UYAP .udf formatının tersine mühendisliği](https://dev.to/eimza/reverse-engineering-uyaps-udf-file-format-whats-inside-a-turkish-court-document-220m).
+- Sürükle-bırak desteği: [tkinterdnd2](https://github.com/Eliav2/tkinterdnd2)
+  (MIT lisansı).
 
 ## Lisans
 
