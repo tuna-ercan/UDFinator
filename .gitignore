@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Arka plan resmi (kisisel aile fotografi depoya girmesin)
+arkaplan.png
+arkaplan.jpg
+arkaplan.jpeg
+background.png
+background.jpg
+background.jpeg
+
+# Isletim sistemi
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Gecici / ornek ciktilar
+*.docx
+*.pdf
+*.udf
