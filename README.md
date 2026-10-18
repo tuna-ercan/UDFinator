@@ -38,12 +38,56 @@ fotoğrafta okunur, fotoğrafın geri kalanı görünür kalır.
 > ⚠️ Fotoğraf gömülü exe kişisel bir resim içerir. `image.jpg` ve `dist/`
 > klasörü `.gitignore` ile depodan hariç tutulur — exe'yi GitHub'a yüklemeyin.
 
+## UYAP Uyumluluğu
+
+UDFinator'ın ürettiği UDF dosyaları (metin, tablo, birleşik hücre, resim, girinti
+ve PDF'den dönüştürülmüş belgeler) **UYAP Doküman Editörü v5.4.20**'de açılarak
+test edilmiştir.
+
+Editör katıdır; bu kurallardan biri bozulursa dosyayı açarken kilitlenir:
+
+- Tablo sütun genişlikleri (`columnSpans`) ve resim boyutları **tam sayı**
+  olmalıdır. Örneğin `102.0` gibi ondalıklı bir değer editörde
+  `NumberFormatException` hatasına yol açar.
+- Resimler PNG olarak gömülür.
+- Stil bölümü (`FONT_ATTRIBUTE_KEY` dahil) UYAP'ın kendi dosyalarındakiyle
+  birebir aynı olmalıdır.
+
+### UYAP Doküman Editörü açılmıyorsa (Java sürümü)
+
+Editör yalnızca **Java 6–14** ile çalışır. Bilgisayarda yalnızca Java 17 gibi
+daha yeni bir sürüm varsa, editör daha hiçbir dosyayı açmadan şu hatalardan
+birini verir. Sorun UDF dosyasında değil, Java sürümündedir:
+
+- *"Java Sürümünüz Uygun Değil … 6 İla 14 Arasında Olmalı"*
+- `NullPointerException … XmlUtils.getXStream() is null`
+
+Çözüm: ücretsiz **Java 11** kurun. Java 17 kurulu kalabilir; editörün ayarlarında
+tercih edilen sürüm zaten 11'dir.
+
+1. [adoptium.net](https://adoptium.net) → **Temurin 11 (LTS)**, Windows, x64,
+   **JRE**, `.msi` indirin.
+2. Kurulumdaki **Custom Setup** ekranında **JavaSoft (Oracle) registry keys**
+   seçeneğinin solundaki simgeye tıklayıp *"Will be installed on local hard
+   drive"* seçin. Bu seçenek varsayılan olarak **kapalıdır**; editörün başlatıcısı
+   Java'yı bu kayıt defteri anahtarıyla bulur.
+3. Java 11 zaten kuruluysa: **Ayarlar → Uygulamalar → Eclipse Temurin JRE 11 →
+   Değiştir → Change** ile aynı seçeneği açın. Ya da yönetici olarak açılmış bir
+   terminalde:
+
+```bash
+msiexec /i OpenJDK11U-jre_x64_windows_hotspot_11.0.32.msi ADDLOCAL=FeatureMain,FeatureOracleJavaSoft /passive
+```
+
 ## Çalışma Şekli (teknik)
 
 Bir `.udf` dosyası, içinde `content.xml` bulunan bir ZIP arşividir. Tüm metin tek
 bir CDATA havuzunda tutulur; biçim parçaları bu havuza karakter tabanlı, mutlak
-`startOffset`/`length` değerleriyle referans verir. Paragraflar havuzda `\n` ile
-ayrılır; resimler U+FFFC, boş paragraflar U+200B ile işaretlenir.
+`startOffset`/`length` değerleriyle referans verir. Paragraf yapısı
+`<paragraph>` elemanlarından gelir; resimler U+FFFC, boş paragraflar U+200B ile
+işaretlenir. UDFinator'ın ürettiği dosyalarda gövde paragrafları arasında havuzda
+ayırıcı (`\n`) bulunmaz — bu, UYAP'ta açıldığı doğrulanan yapıdır. Okurken her iki
+biçim de (ayırıcılı ve ayırıcısız) desteklenir.
 
 - **UDF → Word / PDF:** UDF ortak bir belge modeline çözümlenir, ardından Word
   (python-docx) veya PDF (reportlab, Windows sistem yazı tipleri gömülü) olarak
