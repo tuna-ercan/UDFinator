@@ -622,10 +622,7 @@ _UDF_TEMPLATE = (
     '<?xml version="1.0" encoding="UTF-8" ?>\n'
     '<template format_id="1.8">\n'
     '<content><![CDATA[{content}]]></content>\n'
-    '<properties><pageFormat mediaSizeName="1" leftMargin="42.51968479156494" '
-    'rightMargin="42.51968479156494" topMargin="42.51968479156494" '
-    'bottomMargin="42.51968479156494" paperOrientation="1" '
-    'headerFOffset="20.0" footerFOffset="20.0" /></properties>\n'
+    '<properties>{page}</properties>\n'
     '<elements resolver="hvl-default">\n{elements}\n</elements>\n'
     '<styles><style name="default" description="Geçerli" family="Dialog" '
     'size="12" bold="false" italic="false" foreground="-13421773" '
@@ -635,6 +632,18 @@ _UDF_TEMPLATE = (
     'description="Gövde" /></styles>\n'
     '</template>'
 )
+
+_DEFAULT_MARGIN = 42.51968479156494  # 1,5 cm
+_A4_W, _A4_H = 595.2756, 841.8898   # pt
+
+
+def _page_format(left=_DEFAULT_MARGIN, right=_DEFAULT_MARGIN, top=_DEFAULT_MARGIN,
+                 bottom=_DEFAULT_MARGIN, header=20.0, footer=20.0, orientation=1):
+    """UYAP sayfa duzeni (A4). orientation: Java PageFormat sabiti, 1 dikey, 0 yatay."""
+    return ('<pageFormat mediaSizeName="1" leftMargin="%.4f" rightMargin="%.4f" '
+            'topMargin="%.4f" bottomMargin="%.4f" paperOrientation="%d" '
+            'headerFOffset="%.1f" footerFOffset="%.1f" />'
+            % (left, right, top, bottom, orientation, header, footer))
 
 
 def _xml_valid(text):
@@ -752,7 +761,8 @@ def pdf_to_udf(pdf_path, udf_path):
         pdf.close()
 
     content = _cdata_safe("".join(content_parts))
-    xml = _UDF_TEMPLATE.format(content=content, elements="\n".join(elements))
+    xml = _UDF_TEMPLATE.format(content=content, page=_page_format(),
+                               elements="\n".join(elements))
 
     try:
         with zipfile.ZipFile(udf_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -826,11 +836,13 @@ class _UdfWriter:
     def end_cell(self):
         self._in_cell = False
 
-    def paragraph(self, attrs, items):
+    def paragraph(self, attrs, items, empty_style=None):
         """items: ('text', metin, stil) | ('tab', stil) | ('image', b64, w, h)
 
         Hucre icinde, dolu bir paragraftan sonra gelen paragrafin onune bir \\n
         ayiricisi eklenir (havuz sirasi eleman sirasiyla ayni kalsin diye burada).
+        empty_style: bos paragrafin yazi tipi/boyutu (Word'deki paragraf isaretinin
+        boyutu; bos satirin yuksekligini bu belirler).
         """
         prefix = ""
         if self._in_cell and self._prev_nonblank:
@@ -863,7 +875,8 @@ class _UdfWriter:
             # Bos paragraf isaretcisi
             s = self.take(_ZERO_WIDTH)
             taken.append(_ZERO_WIDTH)
-            parts.append('<content startOffset="%d" length="1" %s />' % (s, _EMPTY_STYLE))
+            parts.append('<content startOffset="%d" length="1" %s />'
+                         % (s, empty_style or _EMPTY_STYLE))
 
         if self._in_cell:
             self._prev_nonblank = bool("".join(taken).strip())
@@ -896,7 +909,7 @@ def _docx_alignment(paragraph):
     return 3 if v in (4, 5, 7, 8, 9) else 0
 
 
-def _docx_para_attrs(paragraph):
+def _docx_para_attrs(paragraph, space_above=0.0, space_below=0.0, line_extra=0.0):
     pf = paragraph.paragraph_format
     # Negatif girintiler (Word'deki asili girinti, kenar boslugu disina tasma)
     # calistigi bilinen ciktida hic yer almaz; guvenli tarafta kalip sifirlanir.
@@ -907,20 +920,187 @@ def _docx_para_attrs(paragraph):
     first = _pt(pf.first_line_indent)
     if first > 0:
         attrs += ' FirstLineIndent="%.1f"' % first
+    # Paragraf araliklari: Word'deki "bos satir" gorunumunun cogu bunlardan gelir
+    if space_above > 0:
+        attrs += ' SpaceAbove="%.1f"' % space_above
+    if space_below > 0:
+        attrs += ' SpaceBelow="%.1f"' % space_below
+    if line_extra > 0:
+        attrs += ' LineSpacing="%.2f"' % line_extra
     return attrs
 
 
-def _docx_defaults(document):
-    family, size = "Times New Roman", 12.0
+_WNS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _on(value):
+    return (value or "1").lower() not in ("0", "false", "off")
+
+
+def _spacing_layer(ppr):
+    """Bir w:pPr'deki aralik ayarlari (twip) ve 'ayni stilde aralik ekleme'."""
+    out = {}
+    if ppr is None:
+        return out
+    sp = ppr.find(_WNS + "spacing")
+    if sp is not None:
+        for k, v in sp.attrib.items():
+            out[k.split("}")[-1]] = v
+    cs = ppr.find(_WNS + "contextualSpacing")
+    if cs is not None:
+        out["contextual"] = _on(cs.get(_WNS + "val"))
+    return out
+
+
+def _style_layers(style):
+    """Stil ve base_style zincirinin aralik katmanlari (ozelden genele)."""
+    layers = []
+    while style is not None:
+        try:
+            layers.append(_spacing_layer(style.element.find(_WNS + "pPr")))
+        except Exception:
+            pass
+        style = getattr(style, "base_style", None)
+    return layers
+
+
+def _docx_doc_spacing(document):
     try:
-        font = document.styles["Normal"].font
-        if font.name:
-            family = font.name
-        if font.size:
-            size = font.size.pt
+        root = document.styles.element
+        return _spacing_layer(root.find(
+            _WNS + "docDefaults/" + _WNS + "pPrDefault/" + _WNS + "pPr"))
+    except Exception:
+        return {}
+
+
+def _docx_table_spacing(table):
+    merged = {}
+    try:
+        for layer in reversed(_style_layers(table.style)):
+            merged.update(layer)
     except Exception:
         pass
-    return family, size
+    return merged
+
+
+def _docx_spacing(paragraph, doc_spacing, table_spacing, prev_p, next_p, size_pt):
+    """Word'un oncelik sirasiyla (dogrudan > paragraf stili > tablo stili >
+    belge varsayilani) paragraf oncesi/sonrasi bosluk (pt) ve UDF satir
+    araligi (1,15 satir -> 0.15) hesaplar."""
+    try:
+        style_layers = _style_layers(paragraph.style)
+    except Exception:
+        style_layers = []
+    layers = ([_spacing_layer(paragraph._p.pPr)] + style_layers
+              + [table_spacing or {}, doc_spacing or {}])
+
+    def look(key):
+        for layer in layers:
+            if key in layer:
+                return layer[key]
+        return None
+
+    def space(key, auto_key):
+        if look(auto_key) is not None and _on(look(auto_key)):
+            return 14.0  # Word'un "otomatik" araligi
+        try:
+            return max(int(look(key) or 0), 0) / 20.0
+        except ValueError:
+            return 0.0
+
+    before = space("before", "beforeAutospacing")
+    after = space("after", "afterAutospacing")
+
+    extra = 0.0
+    try:
+        line = look("line")
+        if line is not None:
+            if (look("lineRule") or "auto") == "auto":
+                extra = int(line) / 240.0 - 1.0
+            else:  # exact / atLeast: punto -> tek satir yuksekligine oran
+                extra = (int(line) / 20.0) / (size_pt * 1.15) - 1.0
+    except (ValueError, ZeroDivisionError):
+        extra = 0.0
+    extra = max(0.0, min(extra, 3.0))
+
+    if look("contextual"):
+        try:
+            sid = paragraph.style.style_id
+            if prev_p is not None and prev_p.style.style_id == sid:
+                before = 0.0
+            if next_p is not None and next_p.style.style_id == sid:
+                after = 0.0
+        except Exception:
+            pass
+    return before, after, extra
+
+
+def _docx_mark_style(paragraph, defaults):
+    """Paragraf isaretinin (bos paragrafin) yazi tipi ve boyutu."""
+    size = family = None
+    ppr = paragraph._p.pPr
+    rpr = ppr.find(_WNS + "rPr") if ppr is not None else None
+    if rpr is not None:
+        sz = rpr.find(_WNS + "sz")
+        if sz is not None:
+            try:
+                size = int(sz.get(_WNS + "val")) / 2.0
+            except (TypeError, ValueError):
+                pass
+        rf = rpr.find(_WNS + "rFonts")
+        if rf is not None:
+            family = rf.get(_WNS + "ascii") or rf.get(_WNS + "hAnsi")
+    if size is None:
+        inherited = _style_font(paragraph, "size")
+        size = inherited.pt if inherited is not None else defaults[1]
+    family = family or _style_font(paragraph, "name") or defaults[0]
+    return 'family="%s" size="%d"' % (_qattr(family), int(round(size))), size
+
+
+def _docx_defaults(document):
+    """Belgenin varsayilan yazi tipi/boyutu: Normal stili, yoksa docDefaults."""
+    family, size = None, None
+    try:
+        font = document.styles["Normal"].font
+        family = font.name
+        size = font.size.pt if font.size else None
+    except Exception:
+        pass
+    try:
+        rpr = document.styles.element.find(
+            _WNS + "docDefaults/" + _WNS + "rPrDefault/" + _WNS + "rPr")
+        if rpr is not None:
+            if size is None and rpr.find(_WNS + "sz") is not None:
+                size = int(rpr.find(_WNS + "sz").get(_WNS + "val")) / 2.0
+            rf = rpr.find(_WNS + "rFonts")
+            if family is None and rf is not None:
+                family = rf.get(_WNS + "ascii")
+    except Exception:
+        pass
+    return family or "Times New Roman", size or 12.0
+
+
+def _docx_page_format(document):
+    """Word'un ust/alt kenar bosluklarini alir; yan bosluklari, A4'te metin
+    sutunu Word'dekiyle ayni genislikte olacak sekilde ayarlar (satirlar ayni
+    kelimelerde kirilsin diye)."""
+    try:
+        from docx.enum.section import WD_ORIENT
+        s = document.sections[0]
+        landscape = s.orientation == WD_ORIENT.LANDSCAPE
+        page_w = _A4_H if landscape else _A4_W
+        left, right = _pt(s.left_margin), _pt(s.right_margin)
+        text_w = _pt(s.page_width) - left - right
+        sides = max(page_w - text_w, 28.0) if text_w > 100 else 2 * _DEFAULT_MARGIN
+        new_left = sides * left / (left + right) if left + right > 0 else sides / 2
+        return _page_format(
+            new_left, sides - new_left,
+            abs(_pt(s.top_margin)) or _DEFAULT_MARGIN,
+            abs(_pt(s.bottom_margin)) or _DEFAULT_MARGIN,
+            _pt(s.header_distance) or 20.0, _pt(s.footer_distance) or 20.0,
+            0 if landscape else 1)
+    except Exception:
+        return _page_format()
 
 
 def _style_font(paragraph, attr):
@@ -1023,21 +1203,27 @@ def _docx_run_images(run, document):
     return out
 
 
-def _docx_paragraph_xml(writer, paragraph, document, defaults):
+def _docx_paragraph_xml(writer, paragraph, document, defaults, spacing_ctx,
+                        prev_p=None, next_p=None):
     """Bir Word paragrafini bir ya da daha fazla UDF <paragraph>'ina cevirir.
 
     Satir sonlari (Shift+Enter) UDF'de paragraf siniri oldugu icin, paragraf
-    o noktalardan bolunur.
+    o noktalardan bolunur. Word'de satir sonu araya bosluk koymaz; bu yuzden
+    paragraf oncesi bosluk yalnizca ilk parcaya, sonrasi yalnizca son parcaya
+    verilir.
     """
-    attrs = _docx_para_attrs(paragraph)
-    out = []
+    doc_spacing, table_spacing = spacing_ctx
+    mark_style, mark_size = _docx_mark_style(paragraph, defaults)
+    before, after, extra = _docx_spacing(paragraph, doc_spacing, table_spacing,
+                                         prev_p, next_p, mark_size)
+    pieces = []
     items = []
     for run in _docx_inner_runs(paragraph):
         style = _docx_run_style(run, paragraph, defaults)
         text = _xml_valid(run.text or "").replace("\r\n", "\n").replace("\r", "\n")
         for li, line in enumerate(text.split("\n")):
             if li > 0:
-                out.append(writer.paragraph(attrs, items))
+                pieces.append(items)
                 items = []
             for ti, piece in enumerate(line.split("\t")):
                 if ti > 0:
@@ -1045,14 +1231,24 @@ def _docx_paragraph_xml(writer, paragraph, document, defaults):
                 if piece:
                     items.append(("text", piece, style))
         items.extend(_docx_run_images(run, document))
-    out.append(writer.paragraph(attrs, items))
+    pieces.append(items)
+
+    out = []
+    last = len(pieces) - 1
+    for i, piece_items in enumerate(pieces):
+        attrs = _docx_para_attrs(paragraph,
+                                 before if i == 0 else 0.0,
+                                 after if i == last else 0.0,
+                                 extra)
+        out.append(writer.paragraph(attrs, piece_items, mark_style))
     return out
 
 
-def _docx_table_xml(writer, table, document, defaults):
+def _docx_table_xml(writer, table, document, defaults, doc_spacing):
     from docx.oxml.ns import qn
     from docx.table import _Cell
 
+    spacing_ctx = (doc_spacing, _docx_table_spacing(table))
     tbl = table._tbl
     widths = []
     for gc in tbl.findall("%s/%s" % (qn("w:tblGrid"), qn("w:gridCol"))):
@@ -1077,8 +1273,12 @@ def _docx_table_xml(writer, table, document, defaults):
                 # Dikey birlesik hucrenin devami: ustteki metni tekrarlama
                 parts.append(writer.paragraph(_PLAIN_PARA_ATTRS, []))
             else:
-                for p in _Cell(tc, table).paragraphs:
-                    parts.extend(_docx_paragraph_xml(writer, p, document, defaults))
+                ps = _Cell(tc, table).paragraphs
+                for j, p in enumerate(ps):
+                    parts.extend(_docx_paragraph_xml(
+                        writer, p, document, defaults, spacing_ctx,
+                        ps[j - 1] if j > 0 else None,
+                        ps[j + 1] if j + 1 < len(ps) else None))
                 if not parts:
                     parts.append(writer.paragraph(_PLAIN_PARA_ATTRS, []))
             writer.end_cell()
@@ -1107,21 +1307,34 @@ def docx_to_udf(docx_path, udf_path):
         )
 
     defaults = _docx_defaults(document)
+    doc_spacing = _docx_doc_spacing(document)
     writer = _UdfWriter()
     elements = []
-    for block in document.iter_inner_content():
+    blocks = list(document.iter_inner_content())
+
+    def neighbor(i):
+        if 0 <= i < len(blocks) and not isinstance(blocks[i], DocxTable):
+            return blocks[i]
+        return None
+
+    for i, block in enumerate(blocks):
         if isinstance(block, DocxTable):
             try:
-                elements.append(_docx_table_xml(writer, block, document, defaults))
+                elements.append(_docx_table_xml(writer, block, document, defaults,
+                                                doc_spacing))
             except Exception:
                 continue
         else:
-            elements.extend(_docx_paragraph_xml(writer, block, document, defaults))
+            elements.extend(_docx_paragraph_xml(
+                writer, block, document, defaults, (doc_spacing, {}),
+                neighbor(i - 1), neighbor(i + 1)))
 
     if not elements:
         elements.append(writer.paragraph(_PLAIN_PARA_ATTRS, []))
 
-    xml = _UDF_TEMPLATE.format(content=writer.content(), elements="\n".join(elements))
+    xml = _UDF_TEMPLATE.format(content=writer.content(),
+                               page=_docx_page_format(document),
+                               elements="\n".join(elements))
     try:
         with zipfile.ZipFile(udf_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("content.xml", xml.encode("utf-8"))

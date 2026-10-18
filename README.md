@@ -15,7 +15,11 @@ Windows uygulaması. Tek pencere, dört büyük düğme — teknik bilgi gerekti
 
 Türkçe karakterler (ç, ğ, ı, İ, ş, ö, ü) her çıktıda doğru görüntülenir.
 Paragraf hizalaması, girintiler, kalın/italik/altı çizili, yazı tipi, boyut, renk,
-sekmeler, resimler ve tablolar (birleşik hücreler dahil) korunur.
+sekmeler, resimler ve tablolar (birleşik hücreler dahil) korunur. Word → UDF'de
+paragraf öncesi/sonrası boşluklar, satır aralığı, boş satır yükseklikleri ve
+metin sütunu genişliği de aktarılır; böylece satırlar UYAP'ta Word'dekiyle aynı
+yerlerden kırılır. (UYAP belgeleri A4 olduğundan, Letter boyutlu Word
+belgelerinde sayfa sonları birkaç satır kayabilir.)
 
 ## Nasıl Kullanılır
 
