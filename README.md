@@ -22,6 +22,8 @@ sekmeler, resimler ve tablolar (birleşik hücreler dahil) korunur.
 1. `UDFinator.exe` dosyasını çalıştırın.
 2. Yapmak istediğiniz dönüşümün düğmesine tıklayın.
 3. Dosyayı seçin. Yeni dosya, seçtiğiniz dosyanın **yanına** kaydedilir.
+   Aynı adlı bir dosya zaten varsa üzerine yazılmaz; yeni dosya
+   `ad (1).docx` gibi ayrı bir adla kaydedilir.
 
 ### Arka plan fotoğrafı
 

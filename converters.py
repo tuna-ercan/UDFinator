@@ -126,14 +126,29 @@ def _local(tag):
     return tag.rsplit("}", 1)[-1]
 
 
+# Gercek UDF'lerin content.xml'i resimlerle bile birkac MB olur; bu sinir,
+# kasitli sisirilmis ("zip bombasi") ya da bozuk bir dosyanin bellegi
+# doldurup programi dondurmasini engeller.
+_MAX_CONTENT_BYTES = 100 * 1024 * 1024
+_TOO_BIG = "UDF dosyası çok büyük ya da bozuk; açılamadı."
+
+
 def _read_content_xml(udf_path):
     if zipfile.is_zipfile(udf_path):
         with zipfile.ZipFile(udf_path) as zf:
-            name = next((n for n in zf.namelist()
-                         if n.lower().endswith("content.xml")), None)
-            if name is None:
+            info = next((i for i in zf.infolist()
+                         if i.filename.lower().endswith("content.xml")), None)
+            if info is None:
                 raise UdfError("UDF içinde content.xml bulunamadı.")
-            return zf.read(name).decode("utf-8", errors="replace")
+            if info.file_size > _MAX_CONTENT_BYTES:
+                raise UdfError(_TOO_BIG)
+            with zf.open(info) as fh:
+                data = fh.read(_MAX_CONTENT_BYTES + 1)
+            if len(data) > _MAX_CONTENT_BYTES:
+                raise UdfError(_TOO_BIG)
+            return data.decode("utf-8", errors="replace")
+    if os.path.getsize(udf_path) > _MAX_CONTENT_BYTES:
+        raise UdfError(_TOO_BIG)
     with open(udf_path, "rb") as fh:
         raw = fh.read()
     if b"<template" in raw:
@@ -601,22 +616,23 @@ def udf_to_pdf(udf_path, pdf_path):
 # PDF -> UDF  (UDF-Toolkit yontemi: metin + gomulu resimler)
 # ---------------------------------------------------------------------------
 
+# Stil bolumu UYAP'in kendi dosyalarindakiyle birebir ayni olmali: editor
+# FONT_ATTRIBUTE_KEY'i bir Java Swing FontUIResource tanimi olarak cozumler.
 _UDF_TEMPLATE = (
-    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<?xml version="1.0" encoding="UTF-8" ?>\n'
     '<template format_id="1.8">\n'
     '<content><![CDATA[{content}]]></content>\n'
     '<properties><pageFormat mediaSizeName="1" leftMargin="42.51968479156494" '
     'rightMargin="42.51968479156494" topMargin="42.51968479156494" '
     'bottomMargin="42.51968479156494" paperOrientation="1" '
-    'headerFOffset="20.0" footerFOffset="20.0"/></properties>\n'
+    'headerFOffset="20.0" footerFOffset="20.0" /></properties>\n'
     '<elements resolver="hvl-default">\n{elements}\n</elements>\n'
-    '<styles>\n'
-    '<style name="default" description="Varsayılan" family="Times New Roman" '
+    '<styles><style name="default" description="Geçerli" family="Dialog" '
     'size="12" bold="false" italic="false" foreground="-13421773" '
-    'FONT_ATTRIBUTE_KEY="Dialog" />\n'
+    'FONT_ATTRIBUTE_KEY="javax.swing.plaf.FontUIResource[family=Dialog,'
+    'name=Dialog,style=plain,size=12]" />'
     '<style name="hvl-default" family="Times New Roman" size="12" '
-    'description="Govde" />\n'
-    '</styles>\n'
+    'description="Gövde" /></styles>\n'
     '</template>'
 )
 
@@ -667,8 +683,7 @@ def pdf_to_udf(pdf_path, udf_path):
         elements.append(
             '<paragraph Alignment="%d" LeftIndent="0.0" RightIndent="0.0">'
             '<content startOffset="%d" length="%d" family="Times New Roman" '
-            'size="12" bold="false" italic="false" foreground="-13421773"/>'
-            '</paragraph>' % (align, offset, n)
+            'size="12" /></paragraph>' % (align, offset, n)
         )
         offset += n
 
@@ -703,17 +718,18 @@ def pdf_to_udf(pdf_path, udf_path):
                         b64 = None
                 if b64 is None:
                     b64 = base64.b64encode(image_bytes).decode("ascii")
-                # Goruntulenecek boyut (sayfadaki yerlesim dikdortgeninden, pt)
+                # Goruntulenecek boyut: sayfadaki yerlesim dikdortgeni (pt),
+                # UDF'nin bekledigi tam sayi piksele (96 dpi) cevrilir
                 try:
                     rects = page.get_image_rects(xref)
                     if rects:
-                        w_pt = round(rects[0].width, 2)
-                        h_pt = round(rects[0].height, 2)
+                        w_pt = max(1, int(rects[0].width * 96 / 72))
+                        h_pt = max(1, int(rects[0].height * 96 / 72))
                 except Exception:
                     pass
                 size_attr = ""
                 if w_pt and h_pt:
-                    size_attr = ' width="%s" height="%s"' % (w_pt, h_pt)
+                    size_attr = ' width="%d" height="%d"' % (w_pt, h_pt)
 
                 content_parts.append(_IMAGE_PLACEHOLDER)
                 elements.append(
@@ -749,11 +765,14 @@ def pdf_to_udf(pdf_path, udf_path):
 # DOCX -> UDF
 # ---------------------------------------------------------------------------
 
-# A4 (595 pt) - 2 x 42.5 pt kenar boslugu; tablo sutun genislikleri icin
-_UDF_TEXT_WIDTH_PT = 510.0
+# Kurallar, UYAP Dokuman Editoru'nde acildigi bilinen UDF-Toolkit ciktisiyla
+# ayni: tablo sutun genislikleri toplami 300 olan tam sayilar, resim boyutlari
+# tam sayi piksel ve PNG, bos paragraf U+200B, bicim oznitelikleri yalnizca
+# acikken yazilir, govde paragraflari arasinda \n yoktur.
+_TABLE_SPAN_TOTAL = 300
 _BLACK = -16777216
-_DEFAULT_STYLE = ('family="Times New Roman" size="12" bold="false" '
-                  'italic="false" underline="false" foreground="%d"' % _BLACK)
+_DEFAULT_STYLE = 'family="Times New Roman" size="12"'
+_EMPTY_STYLE = 'family="Times New Roman" size="10"'
 _PLAIN_PARA_ATTRS = 'Alignment="0" LeftIndent="0.0" RightIndent="0.0"'
 
 
@@ -769,13 +788,12 @@ def _signed_argb(rgb_hex):
 
 
 def _image_to_b64(blob):
-    """Resmi base64'e cevirir; PNG/JPEG disindaki bicimleri PNG yapar."""
+    """Resmi her zaman PNG olarak base64'e cevirir."""
     try:
         from PIL import Image as PILImage
         im = PILImage.open(io.BytesIO(blob))
-        if im.format in ("PNG", "JPEG"):
-            return base64.b64encode(blob).decode("ascii")
-        im = im.convert("RGBA" if im.mode in ("P", "RGBA", "LA") else "RGB")
+        if im.mode not in ("RGB", "RGBA", "L", "LA", "P"):
+            im = im.convert("RGB")  # CMYK JPEG vb.
         buf = io.BytesIO()
         im.save(buf, format="PNG")
         return base64.b64encode(buf.getvalue()).decode("ascii")
@@ -792,6 +810,8 @@ class _UdfWriter:
     def __init__(self):
         self.pool = []
         self.offset = 0
+        self._in_cell = False
+        self._prev_nonblank = False
 
     def take(self, text):
         start = self.offset
@@ -799,11 +819,26 @@ class _UdfWriter:
         self.offset += len(text)
         return start
 
+    def begin_cell(self):
+        self._in_cell = True
+        self._prev_nonblank = False
+
+    def end_cell(self):
+        self._in_cell = False
+
     def paragraph(self, attrs, items):
-        """items: ('text', metin, stil) | ('tab', stil) | ('image', b64, w, h)"""
+        """items: ('text', metin, stil) | ('tab', stil) | ('image', b64, w, h)
+
+        Hucre icinde, dolu bir paragraftan sonra gelen paragrafin onune bir \\n
+        ayiricisi eklenir (havuz sirasi eleman sirasiyla ayni kalsin diye burada).
+        """
+        prefix = ""
+        if self._in_cell and self._prev_nonblank:
+            s = self.take("\n")
+            prefix = '<content startOffset="%d" length="1" %s />' % (s, _EMPTY_STYLE)
+
         parts = []
-        last_style = _DEFAULT_STYLE
-        has_any = False
+        taken = []
         for item in items:
             kind = item[0]
             if kind == "text":
@@ -811,30 +846,28 @@ class _UdfWriter:
                 if not text:
                     continue
                 s = self.take(text)
-                parts.append('<content startOffset="%d" length="%d" %s/>'
+                taken.append(text)
+                parts.append('<content startOffset="%d" length="%d" %s />'
                              % (s, len(text), style))
-                last_style = style
-                has_any = True
             elif kind == "tab":
                 s = self.take("\t")
-                parts.append('<tab startOffset="%d" length="1" %s/>' % (s, item[1]))
-                has_any = True
+                taken.append("\t")
+                parts.append('<tab %s startOffset="%d" length="1" />' % (item[1], s))
             elif kind == "image":
                 s = self.take(_IMAGE_PLACEHOLDER)
-                size = ""
-                if item[2] and item[3]:
-                    size = ' width="%.2f" height="%.2f"' % (item[2], item[3])
-                parts.append('<image imageData="%s" startOffset="%d" length="1"%s/>'
-                             % (item[1], s, size))
-                has_any = True
-        if not has_any:
-            # Bos paragraf isaretcisi (U+200B)
+                taken.append(_IMAGE_PLACEHOLDER)
+                parts.append('<image imageData="%s" startOffset="%d" length="1" '
+                             'width="%d" height="%d" />'
+                             % (item[1], s, item[2] or 100, item[3] or 100))
+        if not taken:
+            # Bos paragraf isaretcisi
             s = self.take(_ZERO_WIDTH)
-            parts.append('<content startOffset="%d" length="1" %s/>' % (s, last_style))
-        # Paragraf siniri
-        s = self.take("\n")
-        parts.append('<content startOffset="%d" length="1" %s/>' % (s, last_style))
-        return "<paragraph %s>%s</paragraph>" % (attrs, "".join(parts))
+            taken.append(_ZERO_WIDTH)
+            parts.append('<content startOffset="%d" length="1" %s />' % (s, _EMPTY_STYLE))
+
+        if self._in_cell:
+            self._prev_nonblank = bool("".join(taken).strip())
+        return prefix + "<paragraph %s>%s</paragraph>" % (attrs, "".join(parts))
 
     def content(self):
         return _cdata_safe("".join(self.pool))
@@ -865,10 +898,14 @@ def _docx_alignment(paragraph):
 
 def _docx_para_attrs(paragraph):
     pf = paragraph.paragraph_format
+    # Negatif girintiler (Word'deki asili girinti, kenar boslugu disina tasma)
+    # calistigi bilinen ciktida hic yer almaz; guvenli tarafta kalip sifirlanir.
+    left = max(_pt(pf.left_indent), 0.0)
+    right = max(_pt(pf.right_indent), 0.0)
     attrs = 'Alignment="%d" LeftIndent="%.1f" RightIndent="%.1f"' % (
-        _docx_alignment(paragraph), _pt(pf.left_indent), _pt(pf.right_indent))
+        _docx_alignment(paragraph), left, right)
     first = _pt(pf.first_line_indent)
-    if first:
+    if first > 0:
         attrs += ' FirstLineIndent="%.1f"' % first
     return attrs
 
@@ -926,10 +963,17 @@ def _docx_run_style(run, paragraph, defaults):
             color = _signed_argb(str(font.color.rgb))
     except Exception:
         pass
-    # UYAP (Java Swing) tam sayi punto bekler
-    return ('family="%s" size="%d" bold="%s" italic="%s" underline="%s" foreground="%d"'
-            % (_qattr(family), int(round(size)), str(bold).lower(),
-               str(italic).lower(), str(underline).lower(), color))
+    # UYAP (Java Swing) tam sayi punto bekler; bicimler yalnizca acikken yazilir
+    attrs = ['family="%s"' % _qattr(family), 'size="%d"' % int(round(size))]
+    if bold:
+        attrs.append('bold="true"')
+    if italic:
+        attrs.append('italic="true"')
+    if underline:
+        attrs.append('underline="true"')
+    if color != _BLACK:
+        attrs.append('foreground="%d"' % color)
+    return " ".join(attrs)
 
 
 def _docx_inner_runs(paragraph):
@@ -970,9 +1014,9 @@ def _docx_run_images(run, document):
         w = h = None
         if i < len(extents):
             try:
-                # EMU -> pt (1 pt = 12700 EMU)
-                w = int(extents[i].get("cx")) / 12700.0
-                h = int(extents[i].get("cy")) / 12700.0
+                # EMU -> tam sayi piksel (96 dpi'da 1 px = 9525 EMU)
+                w = max(1, int(extents[i].get("cx")) // 9525)
+                h = max(1, int(extents[i].get("cy")) // 9525)
             except Exception:
                 pass
         out.append(("image", b64, w, h))
@@ -1006,35 +1050,46 @@ def _docx_paragraph_xml(writer, paragraph, document, defaults):
 
 
 def _docx_table_xml(writer, table, document, defaults):
-    try:
-        col_count = len(table.columns)
-    except Exception:
-        col_count = 1
-    col_count = max(col_count, 1)
-    width = _UDF_TEXT_WIDTH_PT / col_count
-    spans = ",".join("%.1f" % width for _ in range(col_count))
+    from docx.oxml.ns import qn
+    from docx.table import _Cell
+
+    tbl = table._tbl
+    widths = []
+    for gc in tbl.findall("%s/%s" % (qn("w:tblGrid"), qn("w:gridCol"))):
+        try:
+            widths.append(max(int(gc.get(qn("w:w")) or 0), 0))
+        except ValueError:
+            widths.append(0)
+    col_count = max(len(widths), 1)
+    total = sum(widths)
+    if widths and total > 0:
+        spans = [max(1, int(w * _TABLE_SPAN_TOTAL / total)) for w in widths]
+    else:
+        spans = [_TABLE_SPAN_TOTAL // col_count] * col_count
 
     rows_xml = []
-    for row in table.rows:
-        # Birlesik (yatay) hucreler python-docx'te tekrar eder; tek hucre + colspan yap
-        groups = []
-        for cell in row.cells:
-            if groups and groups[-1][0]._tc is cell._tc:
-                groups[-1][1] += 1
-            else:
-                groups.append([cell, 1])
+    for r_i, tr in enumerate(tbl.tr_lst):
         cells_xml = []
-        for cell, span in groups:
-            paras = []
-            for p in cell.paragraphs:
-                paras.extend(_docx_paragraph_xml(writer, p, document, defaults))
-            if not paras:
-                paras.append(writer.paragraph(_PLAIN_PARA_ATTRS, []))
+        for tc in tr.tc_lst:
+            writer.begin_cell()
+            parts = []
+            if tc.vMerge == "continue":
+                # Dikey birlesik hucrenin devami: ustteki metni tekrarlama
+                parts.append(writer.paragraph(_PLAIN_PARA_ATTRS, []))
+            else:
+                for p in _Cell(tc, table).paragraphs:
+                    parts.extend(_docx_paragraph_xml(writer, p, document, defaults))
+                if not parts:
+                    parts.append(writer.paragraph(_PLAIN_PARA_ATTRS, []))
+            writer.end_cell()
+            span = tc.grid_span
             colspan = ' colspan="%d"' % span if span > 1 else ""
-            cells_xml.append("<cell%s>%s</cell>" % (colspan, "".join(paras)))
-        rows_xml.append('<row rowType="dataRow">%s</row>' % "".join(cells_xml))
-    return ('<table columnCount="%d" columnSpans="%s" border="borderCell">%s</table>'
-            % (col_count, spans, "".join(rows_xml)))
+            cells_xml.append("<cell%s>%s</cell>" % (colspan, "".join(parts)))
+        rows_xml.append('<row rowName="row%d" rowType="dataRow">%s</row>'
+                        % (r_i + 1, "".join(cells_xml)))
+    return ('<table tableName="Sabit" columnCount="%d" columnSpans="%s" '
+            'border="borderCell">%s</table>'
+            % (col_count, ",".join(str(s) for s in spans), "".join(rows_xml)))
 
 
 def docx_to_udf(docx_path, udf_path):

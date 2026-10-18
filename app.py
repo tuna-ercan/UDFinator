@@ -74,6 +74,18 @@ def app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def unique_path(path):
+    """Ayni adli dosya varsa uzerine yazmak yerine 'ad (1).uzanti' gibi yeni bir
+    ad bulur; boylece daha once duzenlenmis bir belge kaybolmaz."""
+    if not os.path.exists(path):
+        return path
+    base, ext = os.path.splitext(path)
+    n = 1
+    while os.path.exists("%s (%d)%s" % (base, n, ext)):
+        n += 1
+    return "%s (%d)%s" % (base, n, ext)
+
+
 def find_background():
     """Once exe'nin yanindaki resme (degistirmek kolay olsun), sonra exe'nin
     icine gomulu resme bakar."""
@@ -272,7 +284,7 @@ class ConverterApp:
         ).start()
 
     def _worker(self, path, out_ext, fn, out_name):
-        out_path = os.path.splitext(path)[0] + out_ext
+        out_path = unique_path(os.path.splitext(path)[0] + out_ext)
         try:
             fn(path, out_path)
         except converters.UdfError as exc:
